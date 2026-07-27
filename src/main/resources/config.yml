@@ -1,0 +1,3 @@
+# NameMob configuration
+# timezone: valid ZoneId string, e.g. Europe/Warsaw, UTC, America/New_York
+timezone: Europe/Warsaw

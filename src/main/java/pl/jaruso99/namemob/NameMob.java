@@ -1,6 +1,8 @@
 package pl.jaruso99.namemob;
 
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -45,6 +47,10 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
     private NamespacedKey spawnedByUuidKey;
     private NamespacedKey spawnTimeKey;
     private NamespacedKey mobToolKey;
+    private NamespacedKey nameTaggedByKey;
+    private NamespacedKey nameTaggedTextKey;
+    private NamespacedKey nameTaggedTimeKey;
+    private ZoneId timeZone;
 
     // Krotka kolejka zdarzen uzycia spawn egg; bez map i bez skanowania graczy.
     private final Deque<EggUseContext> pendingEggUses = new ArrayDeque<>();
@@ -55,6 +61,21 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
         spawnedByUuidKey = new NamespacedKey(this, "spawned_by_uuid");
         spawnTimeKey = new NamespacedKey(this, "spawn_time");
         mobToolKey = new NamespacedKey(this, "moblog_tool");
+        nameTaggedByKey = new NamespacedKey(this, "nametag_by");
+        nameTaggedTextKey = new NamespacedKey(this, "nametag_text");
+        nameTaggedTimeKey = new NamespacedKey(this, "nametag_time");
+
+        // Load config and timezone (default to Europe/Warsaw)
+        getConfig().addDefault("timezone", "Europe/Warsaw");
+        getConfig().options().copyDefaults(true);
+        saveConfig();
+        String tz = getConfig().getString("timezone", "Europe/Warsaw");
+        try {
+            timeZone = ZoneId.of(tz);
+        } catch (Exception e) {
+            timeZone = ZoneId.of("Europe/Warsaw");
+            getLogger().warning("Nieprawidlowa strefa czasowa w config.yml: " + tz + ", uzywam Europe/Warsaw");
+        }
 
         if (getCommand("mob") != null) {
             getCommand("mob").setExecutor(this);
@@ -73,7 +94,8 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
 
         if (args.length == 0) {
             player.sendMessage(ChatColor.DARK_AQUA + "--- NameMob Help ---");
-            player.sendMessage(ChatColor.AQUA + "/mob tool " + ChatColor.WHITE + "- Daje narzedzie do sprawdzania mobow");
+            player.sendMessage(
+                    ChatColor.AQUA + "/mob tool " + ChatColor.WHITE + "- Daje narzedzie do sprawdzania mobow");
             return true;
         }
 
@@ -168,7 +190,8 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
         long now = System.nanoTime();
         cleanupOldContexts(now);
 
-        EggUseContext matchedContext = findAndConsumeContext(event.getEntity().getLocation(), event.getEntity().getWorld().getUID(), now);
+        EggUseContext matchedContext = findAndConsumeContext(event.getEntity().getLocation(),
+                event.getEntity().getWorld().getUID(), now);
         if (matchedContext == null) {
             return;
         }
@@ -176,7 +199,8 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
         PersistentDataContainer data = event.getEntity().getPersistentDataContainer();
         data.set(spawnedByKey, PersistentDataType.STRING, matchedContext.playerName);
         data.set(spawnedByUuidKey, PersistentDataType.STRING, matchedContext.playerUuid.toString());
-        data.set(spawnTimeKey, PersistentDataType.STRING, DATE_TIME_FORMATTER.format(LocalDateTime.now()));
+        data.set(spawnTimeKey, PersistentDataType.STRING,
+                DATE_TIME_FORMATTER.format(ZonedDateTime.now(timeZone)));
     }
 
     @EventHandler
@@ -188,6 +212,22 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
         Player player = event.getPlayer();
         ItemStack item = player.getInventory().getItemInMainHand();
 
+        // Track when a player uses a Name Tag on an entity: save who, when and the
+        // text.
+        if (item != null && item.getType() == Material.NAME_TAG) {
+            if (item.hasItemMeta()) {
+                ItemMeta im = item.getItemMeta();
+                if (im.hasDisplayName()) {
+                    Entity tagged = event.getRightClicked();
+                    PersistentDataContainer pdata = tagged.getPersistentDataContainer();
+                    pdata.set(nameTaggedByKey, PersistentDataType.STRING, player.getName());
+                    pdata.set(nameTaggedTextKey, PersistentDataType.STRING, im.getDisplayName());
+                    pdata.set(nameTaggedTimeKey, PersistentDataType.STRING,
+                            DATE_TIME_FORMATTER.format(ZonedDateTime.now(timeZone)));
+                }
+            }
+        }
+
         if (isMobTool(item)) {
             event.setCancelled(true);
             Entity entity = event.getRightClicked();
@@ -198,9 +238,25 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
                 String date = data.get(spawnTimeKey, PersistentDataType.STRING);
 
                 player.sendMessage(ChatColor.DARK_AQUA + "--- Mob Info ---");
-                player.sendMessage(ChatColor.AQUA + "Spawned by " + ChatColor.WHITE + owner + ChatColor.AQUA + " at " + ChatColor.WHITE + date);
+                player.sendMessage(
+                        ChatColor.AQUA + "Plugin version " + ChatColor.WHITE + getDescription().getVersion());
+                player.sendMessage(ChatColor.AQUA + "Spawned by " + ChatColor.WHITE + owner + ChatColor.AQUA + " at "
+                        + ChatColor.WHITE + date);
             } else {
                 player.sendMessage(ChatColor.RED + "Ten mob nie ma zapisanego logu.");
+            }
+
+            // If the mob was named with a Name Tag, show that record too
+            if (data.has(nameTaggedTextKey, PersistentDataType.STRING)) {
+                String namedBy = data.has(nameTaggedByKey, PersistentDataType.STRING)
+                        ? data.get(nameTaggedByKey, PersistentDataType.STRING)
+                        : "nieznany";
+                String nameText = data.get(nameTaggedTextKey, PersistentDataType.STRING);
+                String nameTime = data.has(nameTaggedTimeKey, PersistentDataType.STRING)
+                        ? data.get(nameTaggedTimeKey, PersistentDataType.STRING)
+                        : "unknown";
+                player.sendMessage(ChatColor.AQUA + "Named by " + ChatColor.WHITE + namedBy + ChatColor.AQUA + " as "
+                        + ChatColor.WHITE + nameText + ChatColor.AQUA + " at " + ChatColor.WHITE + nameTime);
             }
         }
     }
@@ -261,7 +317,8 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
         private final Location location;
         private final long timestampNanos;
 
-        private EggUseContext(UUID playerUuid, String playerName, UUID worldUuid, Location location, long timestampNanos) {
+        private EggUseContext(UUID playerUuid, String playerName, UUID worldUuid, Location location,
+                long timestampNanos) {
             this.playerUuid = playerUuid;
             this.playerName = playerName;
             this.worldUuid = worldUuid;
@@ -270,4 +327,3 @@ public class NameMob extends JavaPlugin implements Listener, CommandExecutor {
         }
     }
 }
-
